@@ -856,6 +856,15 @@ runs:
         
         retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
 
+        # KSUN 33214 predates the init.c layout expected by the current
+        # kernel_patches main branch. Keep all other patches current.
+        if [ "${{ inputs.ksu_type }}" = "KSUN" ] && [ "${{ inputs.ksu_branch_or_hash }}" = "3b18216f71df189ab3d1b1ce0bdb21be1268e771" ]; then
+          curl --fail --show-error --location --proto '=https' \
+            "https://raw.githubusercontent.com/WildKernels/kernel_patches/3922ea6989426de03c5f786f266ff005cb68ea19/next/susfs_fix_patches/v2.2.0/fix_init.c.patch" \
+            -o "kernel_patches/next/susfs_fix_patches/v2.2.0/fix_init.c.patch"
+          echo "Applied KSUN 33214 init compatibility override"
+        fi
+
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
           if ! retry_fetch_archive "https://gitlab.com/simonpunk/susfs4ksu.git" "$SUSFS_BRANCH"; then
