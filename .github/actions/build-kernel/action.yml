@@ -1122,6 +1122,44 @@ runs:
             exit 1
             ;;
         esac
+
+        # KSUN 33214 has ksu_handle_execveat_ksud(), but predates the
+        # is_first_zygote static key referenced by the current fix_sucompat.
+        if [ "${{ inputs.ksu_type }}" = "KSUN" ] && [ "${{ inputs.ksu_branch_or_hash }}" = "3b18216f71df189ab3d1b1ce0bdb21be1268e771" ]; then
+          python3 - "$KSUN_FOLDER/kernel/feature/sucompat.c" <<'PY'
+        from pathlib import Path
+        import sys
+
+        source = Path(sys.argv[1])
+        text = source.read_text()
+        new_handler = '''extern struct static_key_true is_first_zygote;
+
+        int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+                    void *envp, int *flags)
+        {
+            if (static_branch_unlikely(&is_first_zygote))
+                (void)ksu_handle_execveat_ksud(fd, filename_ptr, argv, envp, flags);
+
+            return ksu_handle_execveat_sucompat(fd, filename_ptr, argv, envp,
+                                flags);
+        }
+        '''
+        old_handler = '''int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+                    void *envp, int *flags)
+        {
+            if (ksu_handle_execveat_ksud(fd, filename_ptr, argv, envp, flags))
+                return 0;
+
+            return ksu_handle_execveat_sucompat(fd, filename_ptr, argv, envp,
+                                flags);
+        }
+        '''
+        if text.count(new_handler) != 1:
+            raise SystemExit("expected KSUN 33214 sucompat handler not found")
+        source.write_text(text.replace(new_handler, old_handler), newline="\n")
+        PY
+          echo "Applied KSUN 33214 is_first_zygote compatibility override"
+        fi
         
         cd "$COMMON_KERNEL_FOLDER"
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
