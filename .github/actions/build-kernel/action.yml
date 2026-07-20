@@ -863,7 +863,10 @@ runs:
           curl --fail --show-error --location --proto '=https' \
             "https://raw.githubusercontent.com/WildKernels/kernel_patches/3922ea6989426de03c5f786f266ff005cb68ea19/next/susfs_fix_patches/v2.2.0/fix_init.c.patch" \
             -o "kernel_patches/next/susfs_fix_patches/v2.2.0/fix_init.c.patch"
-          echo "Applied KSUN 33214 fix_init compatibility override"
+          curl --fail --show-error --location --proto '=https' \
+            "https://raw.githubusercontent.com/WildKernels/kernel_patches/3922ea6989426de03c5f786f266ff005cb68ea19/next/susfs_fix_patches/v2.2.0/fix_sucompat.c.patch" \
+            -o "kernel_patches/next/susfs_fix_patches/v2.2.0/fix_sucompat.c.patch"
+          echo "Applied KSUN 33214 SusFS compatibility overrides"
         fi
         
         if [ "${{ env.OP_SUSFS }}" = true ]; then
