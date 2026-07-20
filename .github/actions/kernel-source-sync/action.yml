@@ -58,20 +58,64 @@ runs:
             "AnyKernel3": "AnyKernel3"
         }
         DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
+        GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
         aria_quiet_flags = "--quiet --summary-interval=0" if not DEBUG else ""
-        
-        curl_headers = (
-            "-H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' "
-            "-H 'Accept: */*' "
-            "-H 'Connection: keep-alive' "
-            "--tcp-fastopen"
-        )
         
         aria2_headers = (
             "--header='User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' "
             "--header='Accept: */*' "
             "--header='Connection: keep-alive' "
         )
+
+        api_headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if GITHUB_TOKEN:
+            api_headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+        release_url = f"https://api.github.com/repos/{TARGET_REPO}/releases/tags/toolchain-cache"
+        release_response = requests.get(release_url, headers=api_headers, timeout=30)
+        release_response.raise_for_status()
+        release_assets = {
+            asset["name"]: asset
+            for asset in release_response.json().get("assets", [])
+        }
+
+        def download_release_asset(asset, destination):
+            download_headers = dict(api_headers)
+            download_headers["Accept"] = "application/octet-stream"
+            response = requests.get(
+                asset["url"],
+                headers=download_headers,
+                allow_redirects=False,
+                stream=True,
+                timeout=(30, 120),
+            )
+
+            if response.is_redirect:
+                signed_url = response.headers.get("Location")
+                response.close()
+                if not signed_url:
+                    raise RuntimeError(f"Missing redirect URL for release asset {asset['name']}")
+                aria_cmd = [
+                    "aria2c", "-x16", "-s16", "-k1M", "-j16",
+                    "--retry-wait=5", "--max-tries=10",
+                    "--file-allocation=none", "--allow-overwrite=true",
+                    "-d", os.path.dirname(destination),
+                    "-o", os.path.basename(destination),
+                ]
+                if not DEBUG:
+                    aria_cmd.extend(["--quiet", "--summary-interval=0"])
+                aria_cmd.append(signed_url)
+                subprocess.run(aria_cmd, check=True, capture_output=not DEBUG)
+                return
+
+            response.raise_for_status()
+            with response, open(destination, "wb") as output:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        output.write(chunk)
         
         print("::group::Download Manifest Archives")
         
@@ -100,43 +144,30 @@ runs:
                     found_in_cache = False
                     if label:
                         base_filename = f"{label}-{rev}.tar.gz"
-                        BASE_URL = f"https://github.com/{TARGET_REPO}/releases/download/toolchain-cache"
-                        
-                        check_single = f"curl -IsL {curl_headers} --retry 10 --connect-timeout 30 -o /dev/null -w '%{{http_code}}' {BASE_URL}/{base_filename}"
-                        if subprocess.check_output(check_single, shell=True).decode().strip() == "200":
+                        asset = release_assets.get(base_filename)
+
+                        if asset:
                             if DEBUG: print(f"  [CACHE] Downloading single file: {base_filename}")
-                            aria_cmd = f"aria2c -x16 -s16 -k1M -j16 --retry-wait=5 --max-tries=10 -d {shm_workspace} --file-allocation=none {aria_quiet_flags} {aria2_headers} -o {base_filename} {BASE_URL}/{base_filename}"
-                            subprocess.run(aria_cmd, shell=True, check=True, capture_output=not DEBUG)
+                            download_release_asset(asset, os.path.join(shm_workspace, base_filename))
                             found_in_cache = True
                         else:
                             if DEBUG: print(f"  [CACHE] Single file not found, checking parts for {base_filename}...")
-                            parts_to_download = []
-                            for suffix in [f"a{c}" for c in "abcdefghijklmnopqrstuvwxyz"]:
-                                part_name = f"{base_filename}.part{suffix}"
-                                check_part = f"curl -IsL {curl_headers} --retry 10 --connect-timeout 30 -o /dev/null -w '%{{http_code}}' {BASE_URL}/{part_name}"
-                                if subprocess.check_output(check_part, shell=True).decode().strip() == "200":
-                                    parts_to_download.append(f"{BASE_URL}/{part_name}")
-                                else:
-                                    break
-                            
-                            if parts_to_download:
-                                if DEBUG: print(f"  [CACHE] Found {len(parts_to_download)} parts. Downloading...")
-                                
-                                input_file_path = f"{base_filename}.urls"
-                                with open(input_file_path, "w") as f:
-                                    for part_url in parts_to_download:
-                                        p_suffix = part_url.split('.part')[-1]
-                                        p_name = f"{base_filename}.part{p_suffix}"
-                                        f.write(f"{part_url}\n  out={p_name}\n")
-                                
-                                aria_bulk_cmd = (
-                                    f"aria2c -x16 -s16 -k1M -j16 --retry-wait=5 --max-tries=10 -d {shm_workspace} --file-allocation=none "
-                                    f"{aria_quiet_flags} {aria2_headers} "
-                                    f"--input-file={input_file_path}"
-                                )
-                                
-                                subprocess.run(aria_bulk_cmd, shell=True, check=True, capture_output=not DEBUG)
-                                os.remove(input_file_path)
+                            part_assets = sorted(
+                                (
+                                    name, part_asset
+                                    for name, part_asset in release_assets.items()
+                                    if name.startswith(f"{base_filename}.part")
+                                ),
+                                key=lambda item: item[0],
+                            )
+
+                            if part_assets:
+                                if DEBUG: print(f"  [CACHE] Found {len(part_assets)} parts. Downloading...")
+                                for part_name, part_asset in part_assets:
+                                    download_release_asset(
+                                        part_asset,
+                                        os.path.join(shm_workspace, part_name),
+                                    )
                                 found_in_cache = True
                             
                         if not found_in_cache:
