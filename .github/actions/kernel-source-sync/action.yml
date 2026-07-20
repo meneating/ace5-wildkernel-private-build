@@ -154,7 +154,7 @@ runs:
                             if DEBUG: print(f"  [CACHE] Single file not found, checking parts for {base_filename}...")
                             part_assets = sorted(
                                 (
-                                    name, part_asset
+                                    (name, part_asset)
                                     for name, part_asset in release_assets.items()
                                     if name.startswith(f"{base_filename}.part")
                                 ),
